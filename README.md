@@ -3,7 +3,9 @@ COMP402: Year Long Honors Biology and Computer Science Project.
 
 ## Testing a Novel tool for Malignancy Determination in Single-Cell RNA-Seq in Pediatric Brain Cancer
 Author: Charlotte Livingston 
+
 Principal Investigator: Claudia Kleinman 
+
 Date: April 27th, 2025
 
 ### Motivation
