@@ -1,0 +1,158 @@
+---
+title: "Testing Mouse Reference"
+subtitle: "Combined Test Set"
+date: "April 10th, 2025"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      # supress warnings
+                      warning = FALSE, 
+                      # supress messages from the chunks
+                      message = FALSE,
+                      # so that Rmarckdown only recalculate the changed chunks
+                      cache = FALSE,
+                      # Display PNG but also keep PDF 
+                      dev = c("png", "pdf"), 
+                      # In general, keep all the figures produced in a chunk
+                      fig.keep = "all",      
+                      # Save all figures
+                      fig.path = paste0("./figures/"),
+                      #in order to be able to process large files
+                      cache.lazy = FALSE)
+
+#library
+library(SeuratObject)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(MetBrewer)
+library(caret)
+library(circlize)
+library(ComplexHeatmap)
+```
+
+```{r}
+#custom functions
+source("scripts/mouse_ref/functions.R")
+
+#Extract Malignancy labeling
+read_pred <- function(file, true, column_name){
+  pred <- read.table(file, header = TRUE, sep = "\t", row.names = 1)
+  pred <- pred[names(true), column_name] # should automatically remove everything we dont want and put it in same order
+  return (pred)
+}
+
+
+### Custom Palettes ### 
+custom_colors <- c("Malignant" = "coral1", "Normal" = "cyan1", "Doublet" = "goldenrod1", "Uncertain" = "mediumorchid1")
+
+custom_colors_celltype <- c("Malignant" = "coral1", "Normal.Immune" = "lightskyblue",  "Normal.Neurons" = "mediumorchid1", "Normal.Vascular_other" = "goldenrod1", "Normal.Astrocytes" = "mediumseagreen", "Normal.Ependymal" = "aquamarine3", "Normal.Glial_progenitors" = "blue", "Normal.Neuronal_progenitors" = "orchid", "Normal.RGC" = "violet", "Normal.OPC" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+tf_colors <- c("TRUE" = "cornflowerblue", "FALSE"="red1")
+
+all_levels <- c("Malignant", "Normal.Immune", "Normal.Neurons", "Normal.Vascular_other", "Normal.Astrocytes", "Normal.Ependymal", "Normal.Glial_progenitors", "Normal.Neuronal_progenitors", "Normal.RGC", "Normal.OPC", "Normal.Uncertain", "Uncertain")
+
+```
+\n
+
+```{r load data}
+big <- loadRDa("/path/big.Rda")
+```
+We evaluated the predictive power of CoRAL on tumors that are represented in the reference dataset. The reference was constructed using 10 tumor samples from the Manav Pathania lab collected using GEM-X technology. It employs a malignancy versus normal cell type labeling strategy.
+
+Reference report:/Reports/mouse/reference/visualize_reference.html
+
+Ground truth labels for the test tumors were determined by combining malignancy determination using a variation of the grower method with PAM clustering and a broadened set of cell classes derived from the $level1_CAWPE_threshold annotations in each sample's metadata.
+
+The model was tested on the following set of samples from the Manav Pathania lab, collected using GEM-X technology. The tumors were annotated individually and results were combined for more efficient analysis.
+
+For individual analysis of each test sample refer here: /Reports/mouse/gmx_test_set/individual.html
+\n
+
+#### Ground Truth
+```{r plot general}
+print(DimPlot(big, reduction = "umap", group.by = "normal_celltype", cols = custom_colors_celltype, shuffle = TRUE, pt.size = 0.25) + theme(aspect.ratio = 1) + labs(title = "Ground Truth Labeling"))
+```
+
+#### Predictions 
+CoRAL has the option of two consensus strategies: majority vote and CAWPE. Here we compare the predictions made with CAWPE score to the ground truth label. 
+
+On the left is UMAP representation of the sample colored by the predicted labels. On the right highlights cells where there is disagreement between the ground truth and predicted labels. 
+
+```{r, fig.height=5, fig.width=15}
+p1 <- print(DimPlot(big, reduction = "umap", group.by = "CAWPE_Prediction", cols = custom_colors_celltype, shuffle = TRUE, pt.size = 0.25) + theme(aspect.ratio = 1) + labs(title = "CoRAL Predicted Labels"))
+
+p2 <- print(DimPlot(big, reduction = "umap", group.by = "Correct_Predicition", cols = tf_colors, pt.size = 0.25) + theme(aspect.ratio = 1) + labs(title = "CoRAL Prediction Agreement with Ground Truth", subtitle = " True = Match with Ground Truth, False = Mismatch"))
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+\n
+
+#### Mislabeled
+To get an even better idea of where there is disagreement. Lets look at the frequently mislabeled cells. This table represents all incorrectly labeled cells. Row names are the ground truth labels, column names are the predictions. 
+
+```{r}
+incorrect <- big[,big$Correct_Predicition == "FALSE"]
+summary <- table(incorrect$normal_celltype, incorrect$CAWPE_Prediction)
+print(summary)
+
+Idents(big) <- "All"
+```
+\n
+
+
+#### Expression Analysis 
+To determine which label more accurately reflects the cells' biology, we perform expression analysis of key marker genes. In this sample, 108 ground truth Malignant cells are predicted to be Normal.Immune and 23 ground truth Normal.Immune cells are predicted to be Malignant. Lets look at these cells more closely by examining the expression of immune marker Ptprc and glial marker Olig2 (used here to identify malignant glial-like cells). 
+
+```{r Immune_doublet, fig.height=5, fig.width=15}
+sub <- subset(big, normal_celltype %in% c("Normal.Immune", "Malignant") & CAWPE_Prediction %in% c("Normal.Immune", "Malignant"))
+
+sub@meta.data$label <- mapply(function(normal_celltype, CAWPE_Prediction){
+  paste0("T: ", normal_celltype, "\nP: ", CAWPE_Prediction)
+}, sub$normal_celltype, sub$CAWPE_Prediction)
+
+# Order for neat plotting 
+order <- c("T: Malignant\nP: Malignant", 
+              "T: Normal.Immune\nP: Normal.Immune",
+              "T: Malignant\nP: Normal.Immune",
+              "T: Normal.Immune\nP: Malignant")
+
+sub$label <- factor(sub$label, levels = order)
+
+v.a <- custom_v(sub, 'label', 'Ptprc')
+v.b <- custom_v(sub, 'label', 'Olig2')
+
+(v.a + v.b) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+\n
+
+153 ground truth Normal.OPC cells are predicted to be Malignant. Lets look at these cells more closely by examining the QC metrics and expression of glial marker Olig2 and Pdgfra. 
+```{r OPC, fig.height=20, fig.width=15}
+sub <- subset(big, normal_celltype %in% c("Normal.OPC", "Malignant") & CAWPE_Prediction %in% c("Malignant"))
+
+sub@meta.data$label <- mapply(function(normal_celltype, CAWPE_Prediction){
+  paste0("T: ", normal_celltype, "\nP: ", CAWPE_Prediction)
+}, sub$normal_celltype, sub$CAWPE_Prediction)
+
+# Order for neat plotting 
+order <- c("T: Malignant\nP: Malignant", 
+              "T: Normal.OPC\nP: Normal.OPC",
+              "T: Normal.OPC\nP: Malignant")
+
+sub$label <- factor(sub$label, levels = order)
+
+p1 <- (custom_v(sub, 'label', 'Olig2'))
+p2 <- (custom_v(sub, 'label', 'Pdgfra'))
+p3 <- (custom_v(sub, 'label', 'nCount_RNA'))
+p4 <- (custom_v(sub, 'label', 'nFeature_RNA'))
+p5 <- (custom_v(sub, 'label', 'percent.mito'))
+p6 <- (custom_v(sub, 'label', 'percent.ribo'))
+(p1 + p2 + p3 + p4 + p5 + p6) + plot_layout(nrow = 3, ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+\n

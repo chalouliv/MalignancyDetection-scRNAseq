@@ -1,0 +1,411 @@
+---
+title: "Testing Human Reference"
+author: Charlotte Livingston
+date: "April 15, 2025"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      # supress warnings
+                      warning = FALSE, 
+                      # supress messages from the chunks
+                      message = FALSE,
+                      # so that Rmarckdown only recalculate the changed chunks
+                      cache = FALSE,
+                      # Display PNG but also keep PDF 
+                      dev = c("png", "pdf"), 
+                      # In general, keep all the figures produced in a chunk
+                      fig.keep = "all",      
+                      # Save all figures
+                      fig.path = paste0("./figures/"),
+                      #in order to be able to process large files
+                      cache.lazy = FALSE)
+
+#library
+library(hdf5r)
+library(SeuratObject)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(MetBrewer)
+library(caret)
+library(circlize)
+library(ComplexHeatmap)
+
+#custom functions
+source("scripts/human_ref/functions.R")
+
+#Extract Malignancy labeling
+read_pred <- function(file, true, column_name){
+  pred <- read.table(file, header = TRUE, sep = "\t", row.names = 1)
+  pred <- pred[names(true), column_name] # should automatically remove everything we dont want and put it in same order
+  return (pred)
+}
+
+custom_colors <- c("Malignant" = "coral1", "Normal" = "cyan1", "Doublet" = "goldenrod1", "Uncertain" = "mediumorchid1")
+tf_colors <- c("Agree" = "cornflowerblue", "Disagree"="red1")
+
+custom_colors_celltype <- c("Malignant" = "coral1", "Normal.Immune" = "lightskyblue",  "Normal.Neurons" = "mediumorchid1", "Normal.Vascular" = "goldenrod1", "Normal.Glia" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+all_levels <- c("Malignant", "Normal.Immune", "Normal.Endothelial","Normal.Microglia", "Normal.Neurons", "Normal.Vascular_other", "Normal.Astrocytes", "Normal.Ependymal", "Normal.Glial_progenitors", "Normal.Neuronal_progenitors", "Normal.RGC", "Normal.OPC")
+```
+
+We evaluated the predictive power of CoRAL on tumors that are unrepresented in the reference dataset. The reference was constructed using four tumor samples: a FORX2 neuroblastoma, an ependymoma, an embryonal tumor with multilayered rosettes (ETMR), and an H3 K27M high-grade glioma. It employs a Malignant v. Normal.celltype labeling strategy.
+
+Reference report: Reports/human/reference/visulize_reference.html
+
+Ground truth labels for the test tumors were determined by combining inferCNV analysis with an broadened set of cell classes derived from the $Cell_type_consensus_Jessa2022 annotations in each sample's metadata.
+
+The model was tested on the following three tumor samples. 
+
+## Group 2: Unrepresented Tumor Types {.tabset .tabset-pills}
+```{r}
+### LOAD DATA ###
+samples <- c("PXAGEX1_CKDL200170338", "PXAGEX2_CKDL210015210", "PXAGEX3_CKDL220009101")
+s_path <- "/path/"
+for (s in samples){
+  temp <- loadRDa(paste0(s_path, s, "/", s, ".seurat.Rda"))
+  assign(s, temp, envir = .GlobalEnv)
+  remove(temp)
+}
+```
+
+
+### PXAGEX1_CKDL200170338
+
+```{r}
+#PXAGEX1_CKDL200170338 
+
+### SET GROUND TRUTH ### 
+`PXAGEX1_CKDL200170338`<- add_broad_celltype2(`PXAGEX1_CKDL200170338`) 
+`PXAGEX1_CKDL200170338` <- add_normal_celltypes2(`PXAGEX1_CKDL200170338`)
+``` 
+
+#### Ground Truth
+```{r}
+## Plot Ground truth Labels 
+p1 <- DimPlot(`PXAGEX1_CKDL200170338`, reduction = "umap", group.by = "normal_celltype", cols = custom_colors_celltype) +
+  theme(aspect.ratio = 1) +
+  labs(title = "Ground Truth Labeling of PXAGEX1_CKDL200170338")
+p1
+
+## Extract Prediction made using majority vote
+KP_true <- `PXAGEX1_CKDL200170338`$normal_celltype
+KP_pred_major <- read_pred("h_normal_celltype2/majority/Prediction_Summary_label.tsv", KP_true, "Consensus_2")
+
+## Extract Prediction made using CAWPE (consensus 4)
+KP_pred_cawpe <- read_pred("h_normal_celltype2/CAWPE/Prediction_Summary_label.tsv", KP_true, "Consensus_CAWPE_T_4")
+KP_score_cawpe <- read.csv("h_normal_celltype2/CAWPE/CAWPE_T_4_label_scores.csv")
+rownames(KP_score_cawpe) <- KP_score_cawpe$cellname
+KP_score_cawpe <- KP_score_cawpe[,-1]
+KP_score_cawpe <- KP_score_cawpe[,-2]
+```
+
+#### Predictions {.tabset .tabset-pills}
+CoRAL has the option of two consensus strategies: majority vote and CAWPE. Here we inspect the results of both.
+
+##### Majority 
+Here we compare the predictions made with majority vote to the ground truth label. 
+```{r,fig.width=8, fig.height=8}
+# create confusion matrix 
+prediction <- factor(KP_pred_major)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and Majority Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+p
+```
+
+##### CAWPE 
+Here we compare the predicitons made with CAWPE (Consensus 4) to the ground truth label.
+```{r, fig.width=8, fig.height=8}
+# create confusion matrix 
+prediction <- factor(KP_pred_cawpe)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and CAWPE Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+p
+```
+
+\n
+\n
+#### Further Look at CAWPE Predicitions
+Here we inspect areas of disagreement between the CAWPE made predictions and the ground truth labels. 
+
+On the left is UMAP representation of the sample colored by the predicted labels. On the right highlights cells where there is disagreement between the ground truth and predicted labels.
+
+```{r, fig.width=15, fig.height=5}
+## Add CAWPE made predictions to meta.data 
+`PXAGEX1_CKDL200170338`$CAWPE_Prediction <- prediction
+`PXAGEX1_CKDL200170338` <- correctness2(`PXAGEX1_CKDL200170338`)
+
+## Color UMAP by predicted labels
+p1 <- DimPlot(`PXAGEX1_CKDL200170338`, reduction = "umap", group.by = "CAWPE_Prediction", cols = custom_colors_celltype) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CAWPE Predictions for Malignancy Status")
+
+## Color UMAP by disagreement
+p2 <- DimPlot(`PXAGEX1_CKDL200170338`, reduction = "umap", group.by = "Correct_Predicition", cols = tf_colors) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CAWPE Prediction Agreement with Ground Truth", subtitle = " Agree = Match with Ground Truth, Disagree = Mismatch")
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+\n
+
+#### Mislabeled
+To get an even better idea of where there is disagreement, lets look at the frequently 
+cell types.
+
+This table represents all incorrectly labeled cells. Row names are the ground truth labels, 
+column names are the predictions. 
+```{r}
+# print what it is getting wrong 
+incorrect <- `PXAGEX1_CKDL200170338`[,`PXAGEX1_CKDL200170338`$Correct_Predicition == "Disagree"]
+summary <- table(incorrect$normal_celltype, incorrect$CAWPE_Prediction)
+print(summary)
+```
+
+### PXAGEX2_CKDL210015210
+
+#### Ground Truth
+```{r}
+#PXAGEX2_CKDL210015210 
+
+### SET GROUND TRUTH ### 
+`PXAGEX2_CKDL210015210`<- add_broad_celltype2(`PXAGEX2_CKDL210015210`) 
+`PXAGEX2_CKDL210015210` <- add_normal_celltypes2(`PXAGEX2_CKDL210015210`)
+```
+
+```{r}
+## Plot Ground truth Labels 
+p1 <- DimPlot(`PXAGEX2_CKDL210015210`, reduction = "umap", group.by = "normal_celltype", cols = custom_colors_celltype) +
+  theme(aspect.ratio = 1) +
+  labs(title = "Ground Truth Labeling of PXAGEX2_CKDL210015210")
+p1
+
+## Extract Prediction made using majority vote
+KP_true <- `PXAGEX2_CKDL210015210`$normal_celltype
+KP_pred_major <- read_pred("h_normal_celltype2/majority/Prediction_Summary_label.tsv", KP_true, "Consensus_2")
+
+## Extract Prediction made using CAWPE (consensus 4)
+KP_pred_cawpe <- read_pred("h_normal_celltype2/CAWPE/Prediction_Summary_label.tsv", KP_true, "Consensus_CAWPE_T_4")
+KP_score_cawpe <- read.csv("h_normal_celltype2/CAWPE/CAWPE_T_4_label_scores.csv")
+rownames(KP_score_cawpe) <- KP_score_cawpe$cellname
+KP_score_cawpe <- KP_score_cawpe[,-1]
+KP_score_cawpe <- KP_score_cawpe[,-2]
+```
+
+#### Predictions {.tabset .tabset-pills}
+CoRAL has the option of two consensus strategies: majority vote and CAWPE. Here we inspect the results of both.
+
+##### Majority 
+Here we compare the predictions made with majority vote to the ground truth label.
+```{r,fig.width=8, fig.height=8}
+# create confusion matrix 
+prediction <- factor(KP_pred_major)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and Majority Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+p
+```
+
+##### CAWPE 
+Here we compare the predictions made with CAWPE (consensus) to the ground truth label.
+```{r, fig.width=8, fig.height=8}
+# create confusion matrix 
+prediction <- factor(KP_pred_cawpe)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and CAWPE Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+p
+```
+
+\n
+\n
+#### Further Look at CAWPE Predicitions
+Here we inspect areas of disagreement between the CAWPE made predictions and the ground truth labels. 
+
+On the left is UMAP representation of the sample colored by the predicted labels. On the right highlights cells where there is disagreement between the ground truth and predicted labels.
+
+```{r, fig.width=15, fig.height=5}
+## Add predictions to meta.data 
+`PXAGEX2_CKDL210015210`$CAWPE_Prediction <- prediction
+`PXAGEX2_CKDL210015210` <- correctness2(`PXAGEX2_CKDL210015210`)
+
+## Color UMAP based on predictions
+p1 <- DimPlot(`PXAGEX2_CKDL210015210`, reduction = "umap", group.by = "CAWPE_Prediction", cols = custom_colors_celltype) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CAWPE Predictions for Malignancy Status")
+
+## Color UMAP based on disagreement 
+p2 <- DimPlot(`PXAGEX2_CKDL210015210`, reduction = "umap", group.by = "Correct_Predicition", cols = tf_colors) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CAWPE Prediction Agreement with Ground Truth", subtitle = " Agree = Match with Ground Truth, Disagree = Mismatch")
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+\n
+
+#### Mislabeled
+To get an even better idea of where there is disagreement, lets look at the frequently 
+cell types.
+
+This table represents all incorrectly labeled cells. Row names are the ground truth labels, 
+column names are the predictions.
+```{r}
+# print what it is getting wrong 
+incorrect <- `PXAGEX2_CKDL210015210`[,`PXAGEX2_CKDL210015210`$Correct_Predicition == "Disagree"]
+summary <- table(incorrect$normal_celltype, incorrect$CAWPE_Prediction)
+print(summary)
+```
+
+### PXAGEX3_CKDL220009101
+```{r}
+#PXAGEX3_CKDL220009101 
+
+## SET GROUND TRUTH ##
+`PXAGEX3_CKDL220009101`<- add_broad_celltype2(`PXAGEX3_CKDL220009101`) 
+`PXAGEX3_CKDL220009101` <- add_normal_celltypes2(`PXAGEX3_CKDL220009101`)
+```
+
+#### Ground Truth
+```{r}
+## Color UMAP based on Ground Truth 
+p1 <- DimPlot(`PXAGEX3_CKDL220009101`, reduction = "umap", group.by = "normal_celltype") +
+  theme(aspect.ratio = 1) +
+  labs(title = "Ground Truth Labeling of PXAGEX3_CKDL220009101")
+p1 
+
+
+## Extract Prediction made using Majority 
+KP_true <- `PXAGEX3_CKDL220009101`$normal_celltype
+KP_pred_major <- read_pred("h_normal_celltype2/majority/Prediction_Summary_label.tsv", KP_true, "Consensus_2")
+
+## Extract Prediction made using CAWPE 
+KP_pred_cawpe <- read_pred("h_normal_celltype2/CAWPE/Prediction_Summary_label.tsv", KP_true, "Consensus_CAWPE_T_4")
+KP_score_cawpe <- read.csv("h_normal_celltype2/CAWPE/CAWPE_T_4_label_scores.csv")
+rownames(KP_score_cawpe) <- KP_score_cawpe$cellname
+KP_score_cawpe <- KP_score_cawpe[,-1]
+KP_score_cawpe <- KP_score_cawpe[,-2]
+```
+
+#### Predictions {.tabset .tabset-pills}
+CoRAL has the option of two consensus strategies: majority vote and CAWPE. Here we inspect the results of both.
+
+##### Majority 
+Here we compare the predictions made with majority vote to the ground truth label.
+```{r,fig.width=8, fig.height=8}
+# create confusion matrix 
+prediction <- factor(KP_pred_major)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and Majority Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+p
+```
+
+##### CAWPE 
+Here we compare the predictions made with CAWPE (consensus) to the ground truth label.
+```{r, fig.width=8, fig.height=8}
+# create confusion matrix 
+prediction <- factor(KP_pred_cawpe)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and CAWPE Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+p
+```
+
+\n
+\n
+#### Further Look at CAWPE Predicitions
+Here we inspect areas of disagreement between the CAWPE made predictions and the ground truth labels. 
+
+On the left is UMAP representation of the sample colored by the predicted labels. On the right highlights cells where there is disagreement between the ground truth and predicted labels.
+
+```{r, fig.width=15, fig.height=5}
+`PXAGEX3_CKDL220009101`$CAWPE_Prediction <- prediction
+`PXAGEX3_CKDL220009101` <- correctness2(`PXAGEX3_CKDL220009101`)
+
+p1 <- DimPlot(`PXAGEX3_CKDL220009101`, reduction = "umap", group.by = "CAWPE_Prediction") + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CAWPE Predictions for Malignancy Status")
+
+p2 <- DimPlot(`PXAGEX3_CKDL220009101`, reduction = "umap", group.by = "Correct_Predicition", cols = tf_colors) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CAWPE Prediction Agreement with Ground Truth", subtitle = " Agree = Match with Ground Truth, Disagree = Mismatch")
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+\n
+
+#### Mislabeled
+To get an even better idea of where there is disagreement, lets look at the frequently 
+cell types.
+
+This table represents all incorrectly labeled cells. Row names are the ground truth labels, 
+column names are the predictions.
+```{r}
+# print what it is getting wrong 
+incorrect <- `PXAGEX3_CKDL220009101`[,`PXAGEX3_CKDL220009101`$Correct_Predicition == "Disagree"]
+summary <- table(incorrect$normal_celltype, incorrect$CAWPE_Prediction)
+print(summary)
+```
+
+

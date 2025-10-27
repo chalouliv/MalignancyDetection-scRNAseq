@@ -1,0 +1,185 @@
+---
+title: "Testing Human Reference"
+author: Charlotte Livingston
+date: "Feburary 13, 2025"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      # supress warnings
+                      warning = FALSE, 
+                      # supress messages from the chunks
+                      message = FALSE,
+                      # so that Rmarckdown only recalculate the changed chunks
+                      cache = FALSE,
+                      # Display PNG but also keep PDF 
+                      dev = c("png", "pdf"), 
+                      # In general, keep all the figures produced in a chunk
+                      fig.keep = "all",      
+                      # Save all figures
+                      fig.path = paste0("./figures/"),
+                      #in order to be able to process large files
+                      cache.lazy = FALSE)
+
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(patchwork)
+library(cowplot)
+
+
+## Samples ##
+path_seurat = "/path/"
+sample = "m_reference"
+
+## Color palettes ##
+custom_colors <- c("malignant" = "coral1", "normal" = "cyan1", "doublet" = "goldenrod1", "uncertain" = "mediumorchid1")
+
+tf_colors <- c("TRUE" = "cornflowerblue", "FALSE"="red1")
+
+colors_normal_celltype <- c("Malignant" = "coral1", "Normal.Immune" = "lightskyblue",  "Normal.Neurons" = "mediumorchid1", "Normal.Vascular_other" = "goldenrod1", "Normal.Astrocytes" = "mediumseagreen", "Normal.Ependymal" = "aquamarine3", "Normal.Glial_progenitors" = "blue", "Normal.Neuronal_progenitors" = "orchid", "Normal.RGC" = "violet", "Normal.OPC" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+colors_broad_celltype <- c("Malignant" = "coral1", "Immune" = "lightskyblue",  "Neurons" = "mediumorchid1", "Vascular_other" = "goldenrod1", "Astrocytes" = "mediumseagreen", "Ependymal" = "aquamarine3", "Glial_progenitors" = "blue", "Neuronal_progenitors" = "orchid", "RGC" = "violet", "OPC" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+## Custom functions ## 
+
+# function for loading .rda ----------------
+loadRDa <- function(fileName){
+  # Loads an RData file, and returns it
+  load(fileName)
+  get(ls()[ls() != "fileName"])
+}
+
+broad_celltype_labeling <- function(celltype) {
+  if (celltype %in% c("Vascular & other", "Vascular", "Pericytes", "Endothelial")) {
+    return("Vascular_other")
+  }
+  else if (celltype %in% c("Neurons", "Neuronal_progenitors", "CGE Inhibitory", "Excitatory L2-L4", "Excitatory L5-L6", "MGE Inhibitory", "Other Excitatory", "RGC", "Other Inhibitory")) {
+    return("Neurons")
+  }
+  else if (celltype %in% c("Immune", "T_Cells", "B_Cells", "Macrophages", "DC", "Monocytes", "NK_Cells", "Mast_Cells", "Microglia", "Meninges")) {
+    return("Immune")
+  }
+  else {
+    return(celltype)
+  }
+}
+
+# Function to add broad celltype labels to the sample
+add_broad_celltype <- function(sample) {
+  sample@meta.data$broad_celltype <- mapply(function(celltype) {
+    if (!is.na(celltype)) {
+      broad_celltype_labeling(celltype)
+    }
+    else {
+      return("Uncertain")
+    }
+  }, sample$level1_CAWPE_threshold)
+  return(sample)
+}
+
+# CODE adapted from Roy Hanna
+UMAP_theme<-function(){
+  theme(aspect.ratio = 1,
+          axis.ticks = element_blank(),
+          axis.text  = element_blank(),
+          axis.line = element_blank(),
+          panel.background = element_blank(),
+          panel.border = element_rect(fill = NA, color = "black"),
+          legend.text = element_text(size = rel(1.2)),  #,legend.position = "bottom"
+          plot.title = element_text(size = 12), face = "bold")
+}
+```
+
+```{r reclustering}
+# # # Scaling and re-find variable features
+# # seurat <- loadRDa(paste0(path_seurat,sample,".Rda"))
+# # 
+# seurat <- ScaleData(seurat)
+# seurat <- FindVariableFeatures(seurat)
+# seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+# 
+# # Plot to see how many dimensions are needed:
+# p <- ElbowPlot(seurat, ndims = 50, reduction = "pca")
+# p
+# 
+# # Find Clusters
+# seurat <- FindNeighbors(seurat, dims = 1:30)
+# seurat <- FindClusters(seurat, resolution = 1.0)
+# seurat <- RunUMAP(seurat, dims = 1:30)
+# save(seurat, file = "/path/")
+```
+
+```{r}
+seurat <- loadRDa("/path/")
+# Function to add broad celltype labeling
+
+## Add Broad Celltype labeling ## 
+seurat <- add_broad_celltype(seurat)
+seurat <- subset(seurat, subset = broad_celltype %in% c('Astrocytes', 'Ependymal', 'Immune', 'Neurons', 'OPC', 'Vascular_other', 'Glial_progenitors'))
+```
+
+## Plotting of Entire Reference 
+
+Here we inspect labels of the reference to ensure proper integration of samples and validity of the labels assigned while building the Mouse Reference. 
+
+#### UMAP representation colored by Malignancy label:
+Malignancy was determined using a variation of the Grower Method with PAM Clustering.
+```{r}
+## Color UMAP based on Malignancy status 
+DimPlot(seurat, reduction = "umap", group.by = "malignant", cols=custom_colors, pt.size = 0.25) + 
+  UMAP_theme() +
+  labs(title = "Distribution of Malignant vs. Normal Cells in the Reference")
+```
+
+#### UMAP representation colored by broad_celltype label:
+Broad_celltype was determined by widening the annotated celltype of each sample to either Immune, Vascular, Neuron, or a varity of Glial celltype.
+```{r}
+## Color UMAP based on broad celltype
+DimPlot(seurat, reduction = "umap", group.by = "broad_celltype", pt.size = 0.25, cols = colors_broad_celltype) + UMAP_theme() + labs(title = "Distribution of Cell Type in the Reference")
+```
+
+#### UMAP representation colored by Malignancy v. Normal.celltype label:
+Normal.celltype was determined by combining the malignancy and broad_celltype label such that malignant cells were deamned Malignant and Normal cells were specified with a celltype.
+```{r}
+## Color UMAP based on Malignant v. Normal.celltype labels
+DimPlot(seurat, reduction = "umap", group.by = "normal_celltype",  cols = colors_normal_celltype) + 
+  UMAP_theme() +
+  labs(title = "Distribution of Malignant vs. Normal + Cell Type Labels in the Reference")
+```
+
+#### Proportion of Malignant and Normal Cells in each Broad.celltype label:
+```{r}
+## Sumarize Malignancy and celltype labels
+metadata <- seurat@meta.data
+data <- metadata %>%
+  group_by(broad_celltype, malignant) %>%
+  summarise(Total = n(), .groups = "drop") 
+
+## Plot as stacked bargraph
+ggplot(data, aes(x = broad_celltype, y = Total, fill = malignant)) +
+  geom_bar(stat = "identity", position = "fill") +
+  geom_text(
+    aes(label = Total), 
+    position = position_fill(vjust = 0.5), 
+    size = 2
+  ) +
+  scale_fill_manual(values = custom_colors) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Malignancy Status by Cell Type Accross Reference Dataset",
+    x = "Cell Type",
+    y = "Percentage",
+    fill = "Malignancy Status"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+
+```

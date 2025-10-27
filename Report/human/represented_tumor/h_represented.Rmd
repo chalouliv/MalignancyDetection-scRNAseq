@@ -1,0 +1,462 @@
+---
+title: "Testing Human Reference"
+author: Charlotte Livingston
+date: "March 31, 2025"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+
+### SET UP ###
+
+knitr::opts_chunk$set(echo = TRUE, 
+                      # supress warnings
+                      warning = FALSE, 
+                      # supress messages from the chunks
+                      message = FALSE,
+                      # so that Rmarckdown only recalculate the changed chunks
+                      cache = FALSE,
+                      # Display PNG but also keep PDF 
+                      dev = c("png", "pdf"), 
+                      # In general, keep all the figures produced in a chunk
+                      fig.keep = "all",      
+                      # Save all figures
+                      fig.path = paste0("./figures/"),
+                      #in order to be able to process large files
+                      cache.lazy = FALSE)
+
+#library
+library(SeuratObject)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+#library(MetBrewer)
+library(caret)
+library(circlize)
+library(ComplexHeatmap)
+library(data.table)
+
+
+### COSTUM FUNCTIONS ###
+
+source("/scripts/human_ref/functions.R")
+
+#Extract labeling from CoRAL output
+read_pred <- function(file, true, column_name){
+  pred <- read.table(file, header = TRUE, sep = "\t", row.names = 1)
+  pred <- pred[names(true), column_name] 
+  return (pred)
+}
+
+
+### COSTUM PALETTES ###
+
+custom_colors <- c("Malignant" = "coral1", "Normal" = "cyan1", "Doublet" = "goldenrod1", "Uncertain" = "mediumorchid1")
+tf_colors <- c("Agree" = "cornflowerblue", "Disagree"="red1")
+
+custom_colors_celltype <- c("Malignant" = "coral1", "Normal.Immune" = "lightskyblue",  "Normal.Neurons" = "mediumorchid1", "Normal.Vascular" = "goldenrod1", "Normal.Glia" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+all_levels <- c("Malignant", "Normal.Immune", "Normal.Endothelial","Normal.Microglia", "Normal.Neurons", "Normal.Vascular_other", "Normal.Astrocytes", "Normal.Ependymal", "Normal.Glial_progenitors", "Normal.Neuronal_progenitors", "Normal.RGC", "Normal.OPC")
+```
+
+We evaluated the predictive power of CoRAL on tumors that are represented in the reference dataset. The reference was constructed using four tumor samples: a FORX2 neuroblastoma, an ependymoma, an embryonal tumor with multilayered rosettes (ETMR), and an H3 K27M high-grade glioma. It employs a malignancy versus normal cell type labeling strategy.
+
+Reference report: Reports/human/reference/visulize_reference.html
+
+Ground truth labels for the test tumors were determined by combining inferCNV analysis with an broadened set of cell classes derived from the $Cell_type_consensus_Jessa2022 annotations in each sample's metadata.
+
+The model was tested on the following two tumor samples. 
+
+## Group 1: Represented Tumor Types {.tabset .tabset-pills}
+```{r}
+### LOAD DATA ###
+samples <- c("P-6117_S-8370", "P-6640_S-9581")
+s_path <- "/path/"
+for (s in samples){
+  temp <- loadRDa(paste0(s_path, s, "/seurat.Rda"))
+  assign(s, temp, envir = .GlobalEnv)
+  remove(temp)
+}
+```
+
+### P-6117_S-8370
+
+```{r}
+#P-6117_S-8370 
+
+### SET GROUND TRUTH ### 
+
+## InferCNV analysis
+# All Clusters Maligant
+`P-6117_S-8370`@meta.data$malignancy <- "Malignant" 
+
+## Broadening of cell types from $Cell_type_consensus_Jessa2022
+`P-6117_S-8370`<- add_broad_celltype(`P-6117_S-8370`) 
+
+## Combine Malignant and Broad.celltyoe to make Normal.celltype 
+`P-6117_S-8370` <- add_normal_celltypes(`P-6117_S-8370`)
+```
+
+#### Ground Truth
+```{r}
+## Plot Ground truth Labels 
+p1 <- DimPlot(`P-6117_S-8370`, reduction = "umap", group.by = "normal_celltype", cols = custom_colors_celltype) +
+  theme(aspect.ratio = 1) +
+  labs(title = "Ground Truth Labeling of P-6117_S-8370")
+p1
+
+## Extract Ground truth
+KP_true <- `P-6117_S-8370`$normal_celltype
+
+## Extract Prediction made using majority vote
+KP_pred_major <- read_pred("h_normal_celltype2/majority/Prediction_Summary_label.tsv", KP_true, "Consensus_2")
+
+## Extract Prediction made using CAWPE consensus 4
+KP_pred_cawpe <- read_pred("h_normal_celltype2/CAWPE/Prediction_Summary_label.tsv", KP_true, "Consensus_CAWPE_T_4")
+
+## Extract associated cawpe scores 
+KP_score_cawpe <- read.csv("h_normal_celltype2/CAWPE/CAWPE_T_4_label_scores.csv")
+rownames(KP_score_cawpe) <- KP_score_cawpe$cellname
+KP_score_cawpe <- KP_score_cawpe[,-1]
+```
+
+#### Predictions {.tabset .tabset-pills}
+CoRAL has the option of two consensus strategies: majority vote and CAWPE. Here we inspect the results of both. 
+
+##### Majority Vote
+Here we compare the predictions made with majority vote to the ground truth label. 
+```{r}
+# create confusion matrix 
+prediction <- factor(KP_pred_major)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and Majority Predicted Labels" )
+
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+```
+
+##### CAWPE 
+Here we compare the predicitons made with CAWPE (Consensus 4) to the ground truth label.
+```{r}
+# create confusion matrix 
+prediction <- factor(KP_pred_cawpe)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and CAWPE Predicted Labels" )
+
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+```
+
+\n
+\n
+#### Further Look at CAWPE Predicitions
+Here we inspect areas of disagreement between the CAWPE made predictions and the ground truth labels. 
+
+On the left is UMAP representation of the sample colored by the predicted labels. On the right highlights cells where there is disagreement between the ground truth and predicted labels. 
+
+```{r, fig.width=15, fig.height=5}
+## Add CAWPE predictions to meta.data 
+`P-6117_S-8370`$CAWPE_Prediction <- prediction
+CAWPE_Score <- apply(KP_score_cawpe, 1, max) %>% as.numeric()
+`P-6117_S-8370` <- AddMetaData(`P-6117_S-8370`, metadata = CAWPE_Score, col.name = "CAWPE_Score")
+`P-6117_S-8370` <- correctness2(`P-6117_S-8370`)
+
+## Color UMAP by predicted labels
+p1 <- DimPlot(`P-6117_S-8370`, reduction = "umap", group.by = "CAWPE_Prediction", cols = custom_colors_celltype) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CoRAL Predicted Label")
+
+
+## Color UMAP by disagreement
+p2 <- DimPlot(`P-6117_S-8370`, reduction = "umap", group.by = "Correct_Predicition", cols = tf_colors) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CoRAL Prediction Agreement with Ground Truth", subtitle = " Agree = Match with Ground Truth, Disagree = Mismatch")
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+\n
+
+#### Mislabeled
+To get an even better idea of where there is disagreement, lets look at the frequently 
+cell types.
+
+This table represents all incorrectly labeled cells. Row names are the ground truth labels, 
+column names are the predictions. 
+
+```{r}
+## Table incorrectly labelled cells 
+incorrect <- `P-6117_S-8370`[,`P-6117_S-8370`$Correct_Predicition == "Disagree"]
+summary <- table(incorrect$normal_celltype, incorrect$CAWPE_Prediction)
+print(summary)
+```
+
+\n
+
+#### Expression Analysis 
+To determine which label more accurately reflects the cells' biology, we perform expression analysis of key marker genes. In this sample, all mislabeled cells are ground truth Malignant cells incorrectly labeled as Normal.Immune. Lets look at these cells more closely by examining the expression of immune marker PTPRC and glial marker OLIG2 (used here to identify malignant glial-like cells). 
+
+```{r}
+# looking markers to see if CoRAL does a better job at labeling 
+
+## Isolate cells of interest 
+Idents(`P-6117_S-8370`) <- "All"
+sub <- subset(`P-6117_S-8370`, subset = CAWPE_Prediction %in% c("Malignant", "Normal.Immune") & normal_celltype %in% c("Malignant", "Normal.Immune"))
+
+## Add Ground truth + predicted labels to meta.data
+sub@meta.data$label <- mapply(function(normal_celltype, CAWPE_Prediction){
+  paste0("T: ", normal_celltype, "\nP: ", CAWPE_Prediction)
+}, sub$normal_celltype, sub$CAWPE_Prediction)
+
+## Order for neat plotting 
+order <- c("T: Malignant\nP: Malignant", 
+              "T: Normal.Immune\nP: Normal.Immune",
+              "T: Malignant\nP: Normal.Immune",
+              "T: Normal.Immune\nP: Malignant")
+sub$label <- factor(sub$label, levels = order)
+
+## Violin plots of specified gene expression
+p1 <- custom_v(sub, 'label', 'PTPRC')
+p2 <- custom_v(sub, 'label', 'OLIG2')
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "Gene Expression", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+### P-6640_S-9581
+```{r}
+# Load P-6640_S-9581 
+clusters <- read.csv("/path/")
+clusters <- as.matrix(clusters)
+rownames(clusters)  <- clusters[,1]
+clusters <- clusters[,-1]
+`P-6640_S-9581`<- AddMetaData(`P-6640_S-9581`, metadata = clusters, col.name = "infer_cluster")
+```
+
+```{r}
+## Define Ground Truth 
+
+## InferCNV interpretation
+# C1 - malignant, C2 - normal 
+`P-6640_S-9581`@meta.data$malignancy <- mapply(function(infer_cluster) {
+    # Define new column (normal_celltype) based on inferCNV and GFP
+    if (infer_cluster == "2") {
+      "Normal"
+    }
+    else{
+      "Malignant"
+    }
+  }, `P-6640_S-9581`@meta.data$infer_cluster)
+
+## Broadening of cell types from $Cell_type_consensus_Jessa2022
+`P-6640_S-9581`<- add_broad_celltype(`P-6640_S-9581`) 
+
+## Combining of Malignant and broad.celltype 
+`P-6640_S-9581` <- add_normal_celltypes(`P-6640_S-9581`)
+```
+
+#### Ground Truth
+```{r}
+## Color UMAP based on ground truth labels 
+p1 <- DimPlot(`P-6640_S-9581`, reduction = "umap", group.by = "normal_celltype", cols = custom_colors_celltype) +
+  theme(aspect.ratio = 1) +
+  labs(title = "Ground Truth Labeling of P-6640_S-9581")
+p1
+```
+
+```{r}
+## Extract Ground truth 
+KP_true <- `P-6640_S-9581`$normal_celltype
+
+## Extract majority vote predictions 
+KP_pred_major <- read_pred("h_normal_celltype2/P-6640_S-9581/h_normal_celltype2/majority/Prediction_Summary_label.tsv", KP_true, "Consensus_2")
+
+## Extract cawpe predictions 
+KP_pred_cawpe <- read_pred("h_normal_celltype2/P-6640_S-9581/h_normal_celltype2/CAWPE/Prediction_Summary_label.tsv", KP_true, "Consensus_CAWPE_T_4")
+
+## Extract CAWPE scores 
+KP_score_cawpe <- read.csv("h_normal_celltype2/P-6640_S-9581/h_normal_celltype2/CAWPE/CAWPE_T_4_label_scores.csv")
+rownames(KP_score_cawpe) <- KP_score_cawpe$cellname
+KP_score_cawpe <- KP_score_cawpe[,-1]
+```
+
+#### Predictions {.tabset .tabset-pills}
+CoRAL has the option of two consensus strategies: majority vote and CAWPE. Here we inspect the results of both. 
+
+##### Majority 
+Here we compare the predictions made with majority vote to the ground truth label.
+```{r}
+# create confusion matrix 
+prediction <- factor(KP_pred_major)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and Majority Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+```
+
+##### CAWPE 
+Here we compare the predictions made with CAWPE to the ground truth label.
+```{r}
+# create confusion matrix 
+prediction <- factor(KP_pred_cawpe)
+true <- factor(KP_true)
+levels(true) <- c(levels(true), levels(prediction))
+levels(prediction) <- c(levels(prediction), levels(true))
+con_mtx <- confusionMatrix(prediction, true, mode = "everything",
+                positive="1")
+p <- plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and CoRAL Predicted Labels" )
+by_class <- con_mtx$byClass
+a <- (paste0("F1: ", by_class["Class: Malignant", "F1"], "\n"))
+b <- (paste0("Recall: ", by_class["Class: Malignant", "Recall"], "\n"))
+c <- (paste0("Precision: ", by_class["Class: Malignant", "Precision"], "\n"))
+cat(a,b,c)
+```
+
+\n
+\n
+
+#### Further Look at CAWPE Predicitions
+Here we inspect areas of disagreement between the CAWPE made predictions and the ground truth labels. 
+
+On the left is UMAP representation of the sample colored by the predicted labels. On the right highlights cells where there is disagreement between the ground truth and predicted labels. 
+
+```{r, fig.width=12, fig.height=4}
+## Add predictions (+ associated info) to meta.data 
+`P-6640_S-9581`$CAWPE_Prediction <- prediction
+CAWPE_Score <- apply(KP_score_cawpe, 1, max) %>% as.numeric()
+`P-6640_S-9581` <- AddMetaData(`P-6640_S-9581`, metadata = CAWPE_Score, col.name = "CAWPE_Score")
+`P-6640_S-9581` <- correctness2(`P-6640_S-9581`)
+
+## Color UMAP based on CAWPE predictions
+p1 <- DimPlot(`P-6640_S-9581`, reduction = "umap", group.by = "CAWPE_Prediction", cols = custom_colors_celltype) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CoRAL Predicted Label")
+
+## Color UMAP based on disagreement
+p2 <- DimPlot(`P-6640_S-9581`, reduction = "umap", group.by = "Correct_Predicition", cols = tf_colors) + 
+  theme(aspect.ratio = 1) +
+  labs(title = "CoRAL Prediction Agreement with Ground Truth", subtitle = "Agree = Match with Ground Truth, Disagree = Mismatch")
+
+
+## Plot formatting  
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+\n
+
+#### Mislabeled
+To get an even better idea of where there is disagreement. Lets look at the frequently mislabeled cells. This table represents all incorrectly labeled cells. Row names are the ground truth labels, column names are the predictions. 
+
+```{r}
+# print what it is getting wrong 
+incorrect <- `P-6640_S-9581`[,`P-6640_S-9581`$Correct_Predicition == "Disagree"]
+summary <- table(incorrect$normal_celltype, incorrect$CAWPE_Prediction)
+print(summary)
+```
+
+\n
+
+#### Expression Analysis 
+To determine which label more accurately reflects the cells' biology, we perform expression analysis of key marker genes. 
+
+92 ground truth Malignant Cells were mislabeled by Coral: 75 were labelled as Normal.Glia, 17 were labelled as Normal Immune. Lets look at these cells more closely, by examining the expression of key immune marker PTPRC and key glial markers OLIG2 + PDGFRA. 
+```{r 6640-True Malignant}
+## Isolate cells of intrest
+sub <- `P-6640_S-9581`[,`P-6640_S-9581`$normal_celltype == "Malignant"]
+
+## Plot key markers expression
+v1 <- custom_v(sub, 'CAWPE_Prediction', 'PTPRC')
+v1.b <- custom_v(sub, 'CAWPE_Prediction', 'OLIG2')
+v1.c <- custom_v(sub, 'CAWPE_Prediction', 'PDGFRA')
+
+## Plot Formatting 
+(v1 + v1.b + v1.c) + plot_layout(ncol = 3) + plot_annotation(title = "Gene Expression within Malignant Cells (ground truth label)", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+67 ground truth Normal cells were mislabeled as Malignant: 7 were labelled as Normal.Glia, 52 as Normal.Immune, and 1 as Normal.Vascular. Lets look at the predicted Normal.Immune cells more closely. 
+```{r 6640 Predicted Immune}
+## Isolate cells of intrest
+sub <- subset(`P-6640_S-9581`, subset = CAWPE_Prediction %in% c("Malignant", "Normal.Immune") & normal_celltype %in% c("Malignant", "Normal.Immune"))
+
+## Add ground truth + predicted label 
+sub@meta.data$label <- mapply(function(normal_celltype, CAWPE_Prediction){
+  paste0("T: ", normal_celltype, "\nP: ", CAWPE_Prediction)
+}, sub$normal_celltype, sub$CAWPE_Prediction)
+
+# Order for neat plotting 
+order <- c("T: Malignant\nP: Malignant", 
+              "T: Normal.Immune\nP: Normal.Immune",
+              "T: Malignant\nP: Normal.Immune",
+              "T: Normal.Immune\nP: Malignant")
+sub$label <- factor(sub$label, levels = order)
+
+## Plot QC 
+p1 <- custom_v(sub, 'label', 'nCount_RNA')
+p2 <- custom_v(sub, 'label', 'nFeature_RNA')
+
+## Plot formatting 
+(p1 + p2) + plot_layout(ncol = 2) + plot_annotation(title = "Quality Control", theme = theme(plot.title = element_text(hjust = 0.5)))
+
+## Plot key marker expression 
+p3 <- custom_v(sub, 'label', 'PTPRC')
+p4 <- custom_v(sub, 'label', 'OLIG2')
+p5 <- custom_v(sub, 'label', 'PDGFRA')
+
+## Plot formatting 
+(p3 + p4 + p5) + plot_layout(ncol = 3) + plot_annotation(title = "Gene Expression", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+47 ground truth Malignant cells were mislabeled as Normal.Glia. Looking at these cells more closely revealed that they were cells of lower quality. 
+```{r 6640-Normal.Glia+Malignant, fig.height=15}
+## Isolate cells of intrest 
+sub <- subset(`P-6640_S-9581`, normal_celltype %in% c("Malignant") & CAWPE_Prediction %in% c("Normal.Glia", "Malignant"))
+
+## Add ground truth + prediction label 
+sub@meta.data$label <- mapply(function(normal_celltype, CAWPE_Prediction){
+  paste0("T: ", normal_celltype, "\nP: ", CAWPE_Prediction)
+}, sub$normal_celltype, sub$CAWPE_Prediction)
+
+## Order for neat plotting 
+order <- c("T: Malignant\nP: Malignant", 
+              "T: Normal.Glia\nP: Normal.Glia",
+              "T: Malignant\nP: Normal.Glia",
+              "T: Normal.Glia\nP: Malignant")
+sub$label <- factor(sub$label, levels = order)
+
+## Plotting QC 
+plot_list <- list()
+for (gene in c('nCount_RNA', 'nFeature_RNA', 'percent.ribo', 'percent.mito')) {
+  v <- custom_v(sub, 'label', gene)
+  plot_list[[gene]] <- v
+}
+
+## Plot formatting 
+(plot_list[['nCount_RNA']] + plot_list[['nFeature_RNA']] + plot_list[['percent.ribo']] + plot_list[['percent.mito']]) + 
+  plot_layout(nrow = 2, ncol = 2) + 
+  plot_annotation(title = "", theme = theme(plot.title = element_text(hjust = 0.5)))
+```

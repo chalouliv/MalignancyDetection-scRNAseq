@@ -1,0 +1,269 @@
+---
+title: "InferCNV callings for Human Reference"
+author: Charlotte Livingston
+date: "November 12, 2024"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+
+
+This notebook outlines the inferCNV analysis preformed on the 4 tumor samples included in the Human Reference built to determine if CoRAL can preform malignancy callings. A conservative approach was taken and only cluster clearly presenting as malignant or normal were called as such. If there was ambiguity that cluster was labeled as 'Uncertain' and the cells were excluded from the reference.
+
+
+```{r set up, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.show = 'hold')
+
+library(here)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ape)
+library(dendextend)
+library(Seurat)
+library(patchwork)
+
+setwd("/path/")
+source("functions.R")
+
+path_seurat = "/path/"
+path_inferCNV = "/path/"
+samples = c('BT2016062', 'NBFOXR2_6', 'P-6337_S-8821', 'etmr1')
+
+###   Custom Functions ###
+# Wrapper function (from Selin Jessa's code)
+## Here's my adapted function from dendextend::get_subdendrograms with the bug fix
+get_subdendrograms2 <- function(dend, k, ...) {
+    clusters <- cutree(dend, k, ...)
+    dend_list <- lapply(unique(clusters), function(cluster.id) {
+        # !! Added names(clusters)[] here
+        find_dendrogram(dend, names(clusters)[which(clusters == cluster.id)])
+    })
+    class(dend_list) <- "dendlist"
+    dend_list
+}
+
+#' This function loads the inferCNV analysis, and plots' the dendrogram and 
+#' four subtrees when cutting with k = 3
+plot_subtrees <- function(dendrogram_path) {
+    # Read in the file from inferCNV
+    dend <- ape::read.tree(file = dendrogram_path)
+    
+    # Conver to hclust
+    hclust_dend <- as.hclust(dend)
+    dend1 <- color_branches(hclust_dend, k = 4)
+    
+    m <- cbind(c(1, 1), c(2, 3), c(4, 5))
+    layout(m)
+    par(mar = c(4, 4, 0, 0))
+    
+    # Plot the whole one
+    plot(dend1, leaflab = "none", horiz = TRUE)
+    
+    # Plot the subtrees
+    dend_list <- get_subdendrograms2(dend1, 4)
+    
+    sapply(dend_list, plot, leaflab = "none", horiz = TRUE)
+    
+    return(list("dend" = dend1,
+                "subdendrograms" = dend_list))
+    
+}
+
+#' This function subclusters a subtree by cutting it into 4 subtrees.
+#' The expected input is a dendrogram, eg x$subdendrograms[[1]] as 
+#' returned by plot_subtrees. Since the result is a list of dendrograms,
+#' it can be called iteratively on the returned value.
+plot_subtrees2 <- function(dend) {
+    
+    m <- cbind(c(1, 1), c(2, 2), c(3, 4), c(5, 6))
+    layout(m)
+    par(mar = c(5, 5, 0, 0))
+    
+    plot(dend, leaflab = "none", horiz = TRUE)
+    
+    dend <- color_branches(dend, k = 4)
+    
+    plot(dend, leaflab = "none", horiz = TRUE)
+    
+    dend_list <- get_subdendrograms2(dend, 4)
+    sapply(dend_list, plot, leaflab = "none", horiz = TRUE)
+    
+    return(dend_list)
+    
+}
+```
+
+## Sample {.tabset}
+
+### BT2016062
+This sample is a Ependymoma published at doi:10.1038/s41588-022-01205-w
+```{r}
+sample <- loadRDa(paste0(path_seurat, samples[1]))
+```
+
+
+#### Analysis 
+InferCNV Results:
+```{r, echo=FALSE, out.width='100%'}
+knitr::include_graphics(paste0(path_inferCNV, samples[1], '/infercnv.png'))
+```
+
+```{r}
+# Read tree
+subtrees = plot_subtrees(paste0(path_inferCNV, samples[1], '/infercnv.observations_dendrogram.txt'))
+# Identify normal and malignant
+normal_barcodes <- c(labels(subtrees$subdendrograms[[2]]))
+malignant_barcodes <- c(labels(subtrees$subdendrograms[[3]]), labels(subtrees$subdendrograms[[4]]))
+
+# Initialize inferCNV column as all Unkown
+sample_with_call <- AddMetaData(sample, metadata = "Uncertain", col.name = "inferCNV")
+
+# Add labels to the metadata
+sample_with_call@meta.data[normal_barcodes, ]$inferCNV <- "Normal"
+sample_with_call@meta.data[malignant_barcodes, ]$inferCNV <- "Malignant"
+
+# Save
+# save(sample_with_call, file = paste0(path_seurat, samples[1], '_w_inferCNV.Rda')) 
+```
+Interpretation: top 2 subtrees are 'Malignant', 3rd subtree is 'Normal', 4th is 'Uncertain'
+
+
+#### Results:
+```{r}
+plot <- UMAPPlot(sample_with_call, group.by = "inferCNV",
+               cols = c("Normal" = "gray80", "Malignant" = "#A3320B", "Uncertain" = "lightsteelblue2"))
+plot
+```
+
+
+### NBFOXR2_6 
+This sample is a FORX2 neuroblastoma published at doi:10.1158/0008-5472.CAN-24-2248
+```{r}
+sample <- loadRDa(paste0(path_seurat, samples[2]))
+```
+
+#### Analysis 
+##### InferCNV Results:
+```{r, echo=FALSE, out.width='100%'}
+knitr::include_graphics(paste0(path_inferCNV, samples[2], '/infercnv.png'))
+```
+
+```{r}
+# Read tree
+subtrees = plot_subtrees(paste0(path_inferCNV, samples[2],'/infercnv.observations_dendrogram.txt'))
+# Interpretation: all malignant
+
+# Identify normal and malignant
+malignant_barcodes <- c(labels(subtrees$subdendrograms[[1]]), labels(subtrees$subdendrograms[[2]]), labels(subtrees$subdendrograms[[3]]), labels(subtrees$subdendrograms[[4]]))
+
+# Initialize inferCNV column as all Uncertain
+sample_with_call <- AddMetaData(sample, metadata = "Uncertain", col.name = "inferCNV")
+
+# Add labels to the metadata
+sample_with_call@meta.data[malignant_barcodes, ]$inferCNV <- "Malignant"
+
+# save
+# save(sample_with_call, file = paste0(path_seurat, samples[2], '_w_inferCNV.Rda')) 
+```
+Interpretation: All subtrees are 'Malignant'
+
+##### Plot Annotation Results:
+```{r}
+plot <- UMAPPlot(sample_with_call, group.by = "inferCNV",
+               cols = c("Normal" = "gray80", "Malignant" ="#A3320B", "Uncertain" = "lightsteelblue2"))
+
+plot
+```
+
+### P-6337_S-8821
+This sample is a K27M High Grade Glioma published at doi:10.1038/s41588-022-01205-w
+```{r}
+sample <- loadRDa(paste0(path_seurat, samples[3]))
+```
+
+##### InferCNV Results:
+```{r, echo=FALSE, out.width='100%'}
+knitr::include_graphics(paste0(path_inferCNV, samples[3], '/infercnv.png'))
+```
+
+```{r}
+# Read tree
+subtrees = plot_subtrees(paste0(path_inferCNV, samples[3],'/infercnv.observations_dendrogram.txt'))
+# Interpretation: Middle 2 subtrees look malignant, top looks normal, bottom is uncertain 
+
+# Identify normal and malignant
+normal_barcodes <- c(labels(subtrees$subdendrograms[[4]]))
+malignant_barcodes <- c(labels(subtrees$subdendrograms[[2]]), labels(subtrees$subdendrograms[[3]]))
+
+# Initialize inferCNV column as all Unkown
+sample_with_call <- AddMetaData(sample, metadata = "Uncertain", col.name = "inferCNV")
+
+# Add labels to the metadata
+sample_with_call@meta.data[normal_barcodes, ]$inferCNV <- "Normal"
+sample_with_call@meta.data[malignant_barcodes, ]$inferCNV <- "Malignant"
+
+# Save
+# save(sample_with_call, file = paste0(path_seurat, samples[3], '_w_inferCNV.Rda')) 
+```
+Interpretation: Top subtree is 'Normal', middle 2 subtrees are 'Malignant', bottom is 'Uncertain'
+
+##### Plot Annotation Results:
+```{r}
+plot <- UMAPPlot(sample_with_call, group.by = "inferCNV",
+               cols = c("Normal" = "gray80", "Malignant" = "#A3320B", "Uncertain" = "lightsteelblue2"))
+plot
+```
+
+### etmr1
+This sample is an ETMR published at doi:10.1038/s41588-019-0531-7
+```{r}
+sample <- loadRDa(paste0(path_seurat, samples[4]))
+```
+
+#### Analysis 
+##### InferCNV Results:
+```{r}
+#code from Alva Annett
+Idents(sample) = "seurat_clusters"
+DimPlot(sample, label = T, label.size = 5, repel = T, pt.size = 0.9) +
+  theme(legend.position = 'none',
+         axis.title = element_blank(), 
+        axis.text = element_blank(), 
+        axis.line = element_blank(), 
+        axis.ticks = element_blank())
+```
+
+InferCNV Results:
+```{r, echo=FALSE, out.width='100%'}
+knitr::include_graphics(paste0(path_inferCNV, samples[4], '/infercnv.png'))
+```
+
+```{r}
+# Read tree
+subtrees = plot_subtrees(paste0(path_inferCNV, samples[4],'/infercnv.observations_dendrogram.txt'))
+# Interpretation: Middle 2 subtrees look malignant, top looks normal, bottom is unknown 
+
+# Identify normal and malignant
+malignant_barcodes <- c(labels(subtrees$subdendrograms[[1]]), labels(subtrees$subdendrograms[[2]]), labels(subtrees$subdendrograms[[3]]), labels(subtrees$subdendrograms[[4]]))
+
+# Initialize inferCNV column as all Unkown
+sample_with_call <- AddMetaData(sample, metadata = "Uncertain", col.name = "inferCNV")
+
+# Add labels to the metadata
+sample_with_call@meta.data[malignant_barcodes, ]$inferCNV <- "Malignant"
+
+# Save
+# save(sample_with_call, file = paste0(path_seurat, samples[4], '_w_inferCNV.Rda')) 
+```
+Interpretation: All subtrees are 'Malignant' 
+
+##### Plot Annotation Results:
+```{r}
+#plot <- UMAPPlot(sample_with_call, group.by = "inferCNV",
+#              cols = c("Normal" = "gray80", "Malignant" = "#A3320B", "Uncertain" = "lightsteelblue2"))
+
+#plot
+```
+

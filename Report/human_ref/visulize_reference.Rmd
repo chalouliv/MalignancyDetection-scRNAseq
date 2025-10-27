@@ -1,0 +1,143 @@
+---
+title: "Visulize Human Reference"
+author: Charlotte Livingston
+date: "March 30, 2025"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      # supress warnings
+                      warning = FALSE, 
+                      # supress messages from the chunks
+                      message = FALSE,
+                      # so that Rmarckdown only recalculate the changed chunks
+                      cache = FALSE,
+                      # Display PNG but also keep PDF 
+                      dev = c("png", "pdf"), 
+                      # In general, keep all the figures produced in a chunk
+                      fig.keep = "all",      
+                      # Save all figures
+                      fig.path = paste0("./figures/"),
+                      #in order to be able to process large files
+                      cache.lazy = FALSE)
+
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(patchwork)
+library(cowplot)
+
+path_seurat = "/path/"
+sample = "h_reference"
+
+# color palettes
+custom_colors <- c("Malignant" = "coral1", "Normal" = "cyan1", "Doublet" = "goldenrod1", "Uncertain" = "mediumorchid1")
+tf_colors <- c("Agree" = "cornflowerblue", "Disagree"="red1")
+
+colors_normal_celltype <- c("Malignant" = "coral1", "Normal.Immune" = "lightskyblue",  "Normal.Neurons" = "mediumorchid1", "Normal.Vascular" = "goldenrod1", "Normal.Glia" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+colors_broad_celltype <- c("Malignant" = "coral1", "Immune" = "lightskyblue",  "Neurons" = "mediumorchid1", "Vascular" = "goldenrod1", "Glia" = "cyan1", "Uncertain" = "hotpink", "Uncertain" = "hotpink")
+
+### COSTUM FUNCTIONS ### 
+
+# function for loading .rda ----------------
+loadRDa <- function(fileName){
+  # Loads an RData file, and returns it
+  load(fileName)
+  get(ls()[ls() != "fileName"])
+}
+```
+
+```{r reclustering}
+# # Scaling and re-find variable features
+# seurat <- loadRDa(paste0(path_seurat,sample,".Rda"))
+# 
+# # Remove Malignant Immune cells: 
+# to_remove <- colnames(subset(seurat, subset = Malignancy == "Malignant" & broad_celltype == "Immune"))
+# seurat <- seurat[, !(colnames(seurat) %in% to_remove)]
+# 
+# seurat <- ScaleData(seurat)
+# seurat <- FindVariableFeatures(seurat)
+# seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+# 
+# # Plot to see how many dimensions are needed: 
+# ElbowPlot(seurat, ndims = 50, reduction = "pca") 
+# 
+# # Find Clusters 
+# seurat <- FindNeighbors(seurat, dims = 1:30)
+# seurat <- FindClusters(seurat, resolution = 1.0)
+# seurat <- RunUMAP(seurat, dims = 1:30)
+# 
+# save(seurat, file = "/path/")
+```
+
+``` {r}
+seurat <- loadRDa("/path/")
+```
+
+## Plotting of Entire Reference 
+
+Here we inspect labels of the reference to ensure proper integration of samples and validity of the labels assigned while building the Human Reference. 
+
+
+#### UMAP representation colored by sample of origin: 
+This reference is a combination 4 tumors and 3 groups of normal cells. 
+```{r}
+DimPlot(seurat, reduction = "umap", group.by = "orig.ident", pt.size =0.25, cols = custom_colors)
+```
+Intermixing between samples indicates that there is no artifacts in the expression data which indicate the sample of origin of each cell.
+
+
+#### UMAP representation colored by Malignancy label:
+Malignancy was determined using inferCNV analysis. 
+```{r}
+DimPlot(seurat, reduction = "umap", group.by = "Malignancy", pt.size =0.25, cols = custom_colors)
+```
+
+#### UMAP representation colored by broad_celltype label:
+Broad_celltype was determined by widening the annotated celltype of each sample to either Glia, Immune, Vascular, or Neuron
+```{r}
+DimPlot(seurat, reduction = "umap", group.by = "broad_celltype", pt.size = 0.25, cols= colors_broad_celltype)
+```
+
+#### UMAP representation colored by Malignancy v. Normal_celltype label:
+Normal_celltype was determined by combining the malignancy and broad_celltype label such that malignant cells were deamned Malignant and Normal cells were specified with a celltype. 
+```{r}
+DimPlot(seurat, reduction = "umap", group.by = "normal_celltype", pt.size = 0.25, cols = colors_normal_celltype)
+```
+
+
+#### Proportion of Malignant and Normal Cells in each Broad_celltype Label:
+```{r}
+## Sumarize Malignancy and celltype labels
+metadata <- seurat@meta.data
+data <- metadata %>%
+  group_by(broad_celltype, Malignancy) %>%
+  summarise(Total = n(), .groups = "drop") 
+
+## Plot as stacked bargraph
+ggplot(data, aes(x = broad_celltype, y = Total, fill = Malignancy)) +
+  geom_bar(stat = "identity", position = "fill") +
+  geom_text(
+    aes(label = Total), 
+    position = position_fill(vjust = 0.5), 
+    size = 2
+  ) +
+  scale_fill_manual(values = custom_colors) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Malignancy Status by Cell Type",
+    x = "Cell Type",
+    y = "Percentage",
+    fill = "Malignancy Status"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+```

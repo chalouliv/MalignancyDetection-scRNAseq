@@ -1,0 +1,115 @@
+---
+title: "Testing Mouse Reference"
+subtitle: "Looking at each test sample individually"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      # supress warnings
+                      warning = FALSE, 
+                      # supress messages from the chunks
+                      message = FALSE,
+                      # so that Rmarkdown only recalculate the changed chunks
+                      cache = FALSE,
+                      # Display PNG but also keep PDF 
+                      dev = c("png", "pdf"), 
+                      # In general, keep all the figures produced in a chunk
+                      fig.keep = "all",      
+                      # Save all figures
+                      fig.path = paste0("./figures/"),
+                      #in order to be able to process large files
+                      cache.lazy = FALSE)
+
+#library
+library(hdf5r)
+library(SeuratObject)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(MetBrewer)
+library(caret)
+library(circlize)
+library(ComplexHeatmap)
+
+### CUSTOM FUNCTIONS ###
+source("scripts/mouse_ref/functions.R")
+
+## Extract Malignancy labeling
+read_pred <- function(file, true, column_name){
+  pred <- read.table(file, header = TRUE, sep = "\t", row.names = 1)
+  pred <- pred[names(true), column_name] # should automatically remove everything we dont want and put it in same order
+  return (pred)
+}
+
+### CUSTOM Colors ###
+custom_colors <- c("Malignant" = "coral1", "Normal" = "cyan1", "Doublet" = "goldenrod1", "Uncertain" = "mediumorchid1")
+
+custom_colors_celltype <- c("Malignant" = "coral1", "Normal.Immune" = "lightskyblue",  "Normal.Neurons" = "mediumorchid1", "Normal.Vascular_other" = "goldenrod1", "Normal.Astrocytes" = "mediumseagreen", "Normal.Ependymal" = "aquamarine3", "Normal.Glial_progenitors" = "blue", "Normal.Neuronal_progenitors" = "orchid", "Normal.RGC" = "violet", "Normal.OPC" = "cyan1", "Uncertain" = "hotpink", "Normal.Uncertain" = "hotpink")
+
+tf_colors <- c("TRUE" = "cornflowerblue", "FALSE"="red1")
+
+all_levels <- c("Malignant", "Normal.Immune", "Normal.Neurons", "Normal.Vascular_other", "Normal.Astrocytes", "Normal.Ependymal", "Normal.Glial_progenitors", "Normal.Neuronal_progenitors", "Normal.RGC", "Normal.OPC", "Normal.Uncertain", "Uncertain")
+```
+
+## Test Sample {.tabset .tabset-pills}
+```{r, results = 'asis'}
+samples <- c("8023_KP", "M9750f_KF", "25092_KNF", "25097_KP", "8007_KPP", "7950_KF", "8-1a_PF", "7944_GPAC", "8025_KP")
+s_path <- "/path/"
+
+for (s in samples) {
+  
+  temp <- loadRDa(paste0(s_path, s, ".Rda"))
+  temp <- fix_gfp(temp)
+  temp <- add_broad_celltype(temp)
+  temp <- add_normal_celltypes(temp)
+  
+  cat(paste0("### ", s, "\n\n"))
+  
+  print(
+    DimPlot(temp, reduction = "umap", group.by = "normal_celltype", 
+            cols = custom_colors_celltype, shuffle = TRUE, pt.size = 0.5) +
+      theme(aspect.ratio = 1) +
+      labs(title = paste0("Ground Truth"))
+  )
+  
+  KP_true <- temp$normal_celltype
+  KP_pred_major <- read_pred(
+    paste0("/path/", 
+           s, "/m_updated_normal_celltype/majority/Prediction_Summary_label.tsv"), 
+    KP_true, "Consensus_2")
+  
+  KP_pred_cawpe <- read_pred(
+    paste0("/path/", 
+           s, "/m_updated_normal_celltype/CAWPE/Prediction_Summary_label.tsv"), 
+    KP_true, "Consensus_CAWPE_T_4")
+  
+  cat("\n\n")
+  cat("#### Predictions {.tabset .tabset-pills}\n\n")
+  
+  for (m in c("major", "cawpe")) {
+    cat(paste0("##### ", m, "\n\n"))
+    cat(paste("Here we compare the predictions made with", m, "to the ground truth label.\n\n"))
+    
+    true <- factor(KP_true)
+    prediction <- factor(get(paste0("KP_pred_", m)))
+    levels(true) <- union(levels(true), levels(prediction))
+    levels(prediction) <- union(levels(prediction), levels(true))
+    
+    con_mtx <- confusionMatrix(prediction, true, mode = "everything", positive = "1")
+    print(plot_cm(con_mtx[["table"]]) + labs(title = "Comparison of Ground Truth Labels and Predicted Labels"))
+    
+    by_class <- con_mtx$byClass
+    cat("\n\n")
+    print(paste0("F1: ", by_class["Class: Malignant", "F1"],"\n\n"))
+    print(paste0("Recall: ", by_class["Class: Malignant", "Recall"],"\n\n"))
+    print(paste0("Precision: ", by_class["Class: Malignant", "Precision"],"\n\n"))
+    cat("\n\n")
+  }
+}
+```
+
+
